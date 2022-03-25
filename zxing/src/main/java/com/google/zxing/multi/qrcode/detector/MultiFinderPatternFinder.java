@@ -247,7 +247,7 @@ final class MultiFinderPatternFinder extends FinderPatternFinder {
         } else { // White pixel
           if ((currentState & 1) == 0) { // Counting black pixels
             if (currentState == 4) { // A winner?
-              if (foundPatternCross(stateCount) && handlePossibleCenter(stateCount, i, j)) { // Yes
+              if (foundPatternCross(stateCount) && handlePossibleCenter(stateCount, i, j,false)) { // Yes
                 // Clear state to start looking again
                 currentState = 0;
                 clearCounts(stateCount);
@@ -265,7 +265,7 @@ final class MultiFinderPatternFinder extends FinderPatternFinder {
       } // for j=...
 
       if (foundPatternCross(stateCount)) {
-        handlePossibleCenter(stateCount, i, maxJ);
+        handlePossibleCenter(stateCount, i, maxJ,false);
       }
     } // for i=iSkip-1 ...
     FinderPattern[][] patternInfo = selectMultipleBestPatterns();
