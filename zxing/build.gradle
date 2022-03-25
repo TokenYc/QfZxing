@@ -1,25 +1,6 @@
-apply plugin: 'com.android.library'
+apply plugin: 'java'
 apply plugin: 'maven-publish'
 
-android {
-    compileSdkVersion rootProject.ext.compileSdkVersion
-
-    defaultConfig {
-        minSdkVersion rootProject.ext.minSdkVersion
-        targetSdkVersion rootProject.ext.targetSdkVersion
-    }
-
-    buildTypes {
-        release {
-            consumerProguardFiles 'proguard-rules.pro'
-        }
-    }
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
-    }
-
-}
 
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
@@ -28,9 +9,16 @@ dependencies {
 
 publishing {
     publications {
-        mavenJava(MavenPublication){
-            groupId = 'com.qianfan.qfzxing'
+        mavenJava(MavenPublication) {
+            groupId = 'org.gradle.sample'
             artifactId = 'library'
+            version = '1.1'
+
+            from components.java
         }
     }
+}
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
 }
