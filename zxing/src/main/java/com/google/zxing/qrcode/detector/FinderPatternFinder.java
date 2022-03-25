@@ -78,7 +78,9 @@ public class FinderPatternFinder {
     }
 
     final FinderPatternInfo find(Map<DecodeHintType, ?> hints) throws NotFoundException {
-        boolean tryHarder = hints != null && hints.containsKey(DecodeHintType.TRY_HARDER);
+        boolean tryHarder = hints != null && hints.containsKey(DecodeHintType.TRY_HARDER);   //一般false
+        boolean pureBarcode = hints != null && hints.containsKey(DecodeHintType.PURE_BARCODE);  //一般false
+        // 获取宽高
         int maxI = image.getHeight();
         int maxJ = image.getWidth();
         // We are looking for black/white/black/white/black modules in
@@ -88,34 +90,41 @@ public class FinderPatternFinder {
         // image, and then account for the center being 3 modules in size. This gives the smallest
         // number of pixels the center could be, so skip this often. When trying harder, look for all
         // QR versions regardless of how dense they are.
-        int iSkip = (3 * maxI) / (4 * MAX_MODULES);
+        int iSkip = (3 * maxI) / (4 * MAX_MODULES);  //调小优化?
         if (iSkip < MIN_SKIP || tryHarder) {
             iSkip = MIN_SKIP;
         }
 
         boolean done = false;
         int[] stateCount = new int[5];
+        // 遍历二进制矩阵
         for (int i = iSkip - 1; i < maxI && !done; i += iSkip) {
             // Get a row of black/white values
-            clearCounts(stateCount);
+            stateCount[0] = 0; // 黑
+            stateCount[1] = 0; // 白
+            stateCount[2] = 0; // 黑
+            stateCount[3] = 0; // 白
+            stateCount[4] = 0; // 黑
             int currentState = 0;
-            for (int j = 0; j < maxJ; j++) {
+            for (int j = 0; j < maxJ; j++) { //改j++ 不一定以1为间隔
                 if (image.get(j, i)) {
                     // Black pixel
                     if ((currentState & 1) == 1) { // Counting white pixels
+                        //扫描到黑块，但是当前正在计数白块，应该将索引+1
                         currentState++;
                     }
                     stateCount[currentState]++;
                 } else { // White pixel
                     if ((currentState & 1) == 0) { // Counting black pixels
-                        if (currentState == 4) { // A winner?
-                            if (foundPatternCross(stateCount)) { // Yes
-                                boolean confirmed = handlePossibleCenter(stateCount, i, j);
+                        if (currentState == 4) { // A winner?  已经扫描到定位符的右边缘
+                            if (foundPatternCross(stateCount)) { // Yes  是否为11311比例
+                                // 如果横向满足比例，接着去处理这个可能为定位的位置
+                                boolean confirmed = handlePossibleCenter(stateCount, i, j, pureBarcode); //第i行 第j列 检查定位符以及是否已经存在
                                 if (confirmed) {
                                     // Start examining every other line. Checking each line turned out to be too
-                                    // expensive and didn't improve performance.
+                                    // expensive and didn't improve performance. 开始检查每一行。 检查每一行结果太昂贵，并没有提高性能。
                                     iSkip = 2;
-                                    if (hasSkipped) {
+                                    if (hasSkipped) {   //
                                         done = haveMultiplyConfirmedCenters();
                                     } else {
                                         int rowSkip = findRowSkip();
@@ -133,18 +142,30 @@ public class FinderPatternFinder {
                                         }
                                     }
                                 } else {
-                                    shiftCounts2(stateCount);
+                                    stateCount[0] = stateCount[2];  //?
+                                    stateCount[1] = stateCount[3];
+                                    stateCount[2] = stateCount[4];
+                                    stateCount[3] = 1;
+                                    stateCount[4] = 0;
                                     currentState = 3;
                                     continue;
                                 }
                                 // Clear state to start looking again
                                 currentState = 0;
-                                clearCounts(stateCount);
-                            } else { // No, shift counts back by two
-                                shiftCounts2(stateCount);
+                                stateCount[0] = 0;
+                                stateCount[1] = 0;
+                                stateCount[2] = 0;
+                                stateCount[3] = 0;
+                                stateCount[4] = 0;
+                            } else { // No, shift counts back by two 班次重新计算两次
+                                stateCount[0] = stateCount[2];
+                                stateCount[1] = stateCount[3];
+                                stateCount[2] = stateCount[4];
+                                stateCount[3] = 1;
+                                stateCount[4] = 0;
                                 currentState = 3;
                             }
-                        } else {
+                        } else {  //4
                             stateCount[++currentState]++;
                         }
                     } else { // Counting white pixels
@@ -153,7 +174,7 @@ public class FinderPatternFinder {
                 }
             }
             if (foundPatternCross(stateCount)) {
-                boolean confirmed = handlePossibleCenter(stateCount, i, maxJ);
+                boolean confirmed = handlePossibleCenter(stateCount, i, maxJ, pureBarcode);
                 if (confirmed) {
                     iSkip = stateCount[0];
                     if (hasSkipped) {
@@ -163,7 +184,6 @@ public class FinderPatternFinder {
                 }
             }
         }
-
         FinderPattern[] patternInfo = selectBestPatterns();
         ResultPoint.orderBestPatterns(patternInfo);
 
@@ -336,68 +356,101 @@ public class FinderPatternFinder {
     private float crossCheckVertical(int startI, int centerJ, int maxCount,
                                      int originalStateCountTotal) {
         BitMatrix image = this.image;
-
         int maxI = image.getHeight();
         int[] stateCount = getCrossCheckStateCount();
 
-        // Start counting up from center
-        int i = startI;
-        while (i >= 0 && image.get(centerJ, i)) {
-            stateCount[2]++;
-            i--;
-        }
-        if (i < 0) {
-            return Float.NaN;
-        }
-        while (i >= 0 && !image.get(centerJ, i) && stateCount[1] <= maxCount) {
-            stateCount[1]++;
-            i--;
-        }
-        // If already too many modules in this state or ran off the edge:
-        if (i < 0 || stateCount[1] > maxCount) {
-            return Float.NaN;
-        }
-        while (i >= 0 && image.get(centerJ, i) && stateCount[0] <= maxCount) {
-            stateCount[0]++;
-            i--;
-        }
-        if (stateCount[0] > maxCount) {
-            return Float.NaN;
-        }
+        int minJ = centerJ, maxJ = centerJ; //中间黑正方形水平方向的边界值
 
-        // Now also count down from center
-        i = startI + 1;
-        while (i < maxI && image.get(centerJ, i)) {
-            stateCount[2]++;
-            i++;
+        while (image.get(maxJ, startI)) {
+            maxJ++;
         }
-        if (i == maxI) {
-            return Float.NaN;
+        maxJ--;
+        while (image.get(minJ, startI)) {
+            minJ--;
         }
-        while (i < maxI && !image.get(centerJ, i) && stateCount[3] < maxCount) {
-            stateCount[3]++;
-            i++;
-        }
-        if (i == maxI || stateCount[3] >= maxCount) {
-            return Float.NaN;
-        }
-        while (i < maxI && image.get(centerJ, i) && stateCount[4] < maxCount) {
-            stateCount[4]++;
-            i++;
-        }
-        if (stateCount[4] >= maxCount) {
-            return Float.NaN;
-        }
+        minJ++;
 
-        // If we found a finder-pattern-like section, but its size is more than 40% different than
-        // the original, assume it's a false positive
-        int stateCountTotal = stateCount[0] + stateCount[1] + stateCount[2] + stateCount[3] +
-                stateCount[4];
-        if (5 * Math.abs(stateCountTotal - originalStateCountTotal) >= 2 * originalStateCountTotal) {
-            return Float.NaN;
-        }
+        loop:
+        for (int k = minJ; k <= maxJ; k++) {
+            // Start counting up from center
+            int i = startI;  //垂直方向
+            while (i >= 0 && image.get(k, i)) { //startI上边到白块以前的黑块数量  改？
+                stateCount[2]++;
+                i--;
+            }
+            if (i < 0) {  //改？
+                resetStateCount(stateCount);
+                continue loop;
+            }
+            while (i >= 0 && !image.get(k, i) && stateCount[1] <= maxCount) { //统计白块数量
+                stateCount[1]++;
+                i--;
+            }
+            // If already too many modules in this state or ran off the edge:
+            // Log.d( 1 and maxCount ,stateCount[1]+   +maxCount);
+            if (i < 0 || stateCount[1] > maxCount) {
+                resetStateCount(stateCount);
+                continue loop;
+            }
+            while (i >= 0 && image.get(k, i) && stateCount[0] <= maxCount) { //统计外边框的黑块数量
+                stateCount[0]++;
+                i--;
+            }
+            if (stateCount[0] > maxCount) {
+                resetStateCount(stateCount);
+                continue loop;
+            }
 
-        return foundPatternCross(stateCount) ? centerFromEnd(stateCount, i) : Float.NaN;
+            // Now also count down from center
+            i = startI + 1;
+            while (i < maxI && image.get(k, i)) {
+                stateCount[2]++;
+                i++;
+            }
+            if (i == maxI) {
+                resetStateCount(stateCount);
+                continue loop;
+            }
+            while (i < maxI && !image.get(k, i) && stateCount[3] < maxCount) {
+                stateCount[3]++;
+                i++;
+            }
+            if (i == maxI || stateCount[3] >= maxCount) {
+                resetStateCount(stateCount);
+                continue loop;
+            }
+            while (i < maxI && image.get(k, i) && stateCount[4] < maxCount) {
+                stateCount[4]++;
+                i++;
+            }
+            if (stateCount[4] >= maxCount) {   //?
+                resetStateCount(stateCount);
+                continue loop;
+            }
+
+            // If we found a finder-pattern-like section, but its size is more than 40% different than
+            // the original, assume it's a false positive
+            int stateCountTotal = stateCount[0] + stateCount[1] + stateCount[2] + stateCount[3] +
+                    stateCount[4];
+            if (5 * Math.abs(stateCountTotal - originalStateCountTotal) >= 2 * originalStateCountTotal) {  //倾斜误差范围  originalStateCountTotal横向相加 stateCountTotal纵向
+                resetStateCount(stateCount);
+                continue loop;
+            }
+            //检测是否满足11311比例
+            if (foundPatternCross(stateCount)) {
+                return centerFromEnd(stateCount, i);   //是否得有一定宽度，即满足11311比例的数量，先假设否
+            } else {
+                resetStateCount(stateCount);
+                continue loop;
+            }
+        }
+        return Float.NaN;
+    }
+
+    private void resetStateCount(int[] stateCount) {
+        for (int x = 0; x < stateCount.length; x++) {
+            stateCount[x] = 0;
+        }
     }
 
     /**
@@ -469,19 +522,6 @@ public class FinderPatternFinder {
         return foundPatternCross(stateCount) ? centerFromEnd(stateCount, j) : Float.NaN;
     }
 
-    /**
-     * @param stateCount  reading state module counts from horizontal scan
-     * @param i           row where finder pattern may be found
-     * @param j           end of possible finder pattern in row
-     * @param pureBarcode ignored
-     * @return true if a finder pattern candidate was found this time
-     * @see #handlePossibleCenter(int[], int, int)
-     * @deprecated only exists for backwards compatibility
-     */
-    @Deprecated
-    protected final boolean handlePossibleCenter(int[] stateCount, int i, int j, boolean pureBarcode) {
-        return handlePossibleCenter(stateCount, i, j);
-    }
 
     /**
      * <p>This is called when a horizontal scan finds a possible alignment pattern. It will
@@ -500,16 +540,22 @@ public class FinderPatternFinder {
      * @param j          end of possible finder pattern in row
      * @return true if a finder pattern candidate was found this time
      */
-    protected final boolean handlePossibleCenter(int[] stateCount, int i, int j) {
+//进一步处理已通过定位符横向扫描的位置 （后续会进行纵向扫描）
+    protected final boolean handlePossibleCenter(int[] stateCount, int i, int j, boolean pureBarcode) {
         int stateCountTotal = stateCount[0] + stateCount[1] + stateCount[2] + stateCount[3] +
-                stateCount[4];
-        float centerJ = centerFromEnd(stateCount, j);
-        float centerI = crossCheckVertical(i, (int) centerJ, stateCount[2], stateCountTotal);
+                stateCount[4]; //1+1+3+1+1=7 约等于7的倍数
+        float centerJ = centerFromEnd(stateCount, j); //水平方向中心点坐标
+        // 横向扫描只能求出 重心的x轴坐标，需要进行纵向扫描求出y轴坐标
+        float centerI = crossCheckVertical(i, (int) centerJ, stateCount[2], stateCountTotal);  //求垂直方向中心坐标 改
         if (!Float.isNaN(centerI)) {
-            // Re-cross check
-            centerJ = crossCheckHorizontal((int) centerJ, (int) centerI, stateCount[2], stateCountTotal);
-            if (!Float.isNaN(centerJ) && crossCheckDiagonal((int) centerI, (int) centerJ)) {
-                float estimatedModuleSize = stateCountTotal / 7.0f;
+            // Re-cross check 重新检验
+//      centerJ = crossCheckHorizontal((int) centerJ, (int) centerI, stateCount[2], stateCountTotal);  //错误，因为原先（centerJ，centerI）指向白区，可以删除，也可以需要修改centerJ，让远点指向黑区
+            if (!Float.isNaN(centerJ) &&
+                    (!pureBarcode)) {
+                //原判断条件为(!pureBarcode || crossCheckDiagonal(centerJ, cenerI))，
+                //crossCheckDiagonal()为对角线检验, 按照上述实现思路需要删掉
+                //pureBarcode一般为false
+                float estimatedModuleSize = stateCountTotal / 7.0f;  //一个小黑块的边长
                 boolean found = false;
                 for (int index = 0; index < possibleCenters.size(); index++) {
                     FinderPattern center = possibleCenters.get(index);
